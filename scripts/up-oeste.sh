@@ -3,9 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 awk -v start="# --- OESTE ---" -v end="# --- " '
-  $0 == start {in=1; next}
-  in && $0 ~ end {exit}
-  in {sub(/^# ?/, ""); print}
+  $0 == start {inside=1; next}
+  inside && $0 ~ end {exit}
+  inside {sub(/^# ?/, ""); print}
 ' .env.example > .env
 
 docker compose up -d --build gateway-oeste beacon-oeste
