@@ -1,0 +1,39 @@
+version: "3.9"
+# Configuracao para gateways distribuidos
+services:
+  gateway-norte:
+    build: .
+    container_name: gateway-norte
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "8082:8082"
+  gateway-sul:
+    build: .
+    container_name: gateway-sul
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+      - "8092:8092"
+  gateway-leste:
+    build: .
+    container_name: gateway-leste
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "8100:8100"
+      - "8101:8101"
+      - "8102:8102"
+  gateway-oeste:
+    build: .
+    container_name: gateway-oeste
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "8110:8110"
+      - "8111:8111"
+      - "8112:8112"

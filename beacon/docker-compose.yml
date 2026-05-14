@@ -1,0 +1,31 @@
+version: "3.9"
+# Configuracao dos beacons de localizacao
+services:
+  beacon-norte:
+    build: .
+    container_name: beacon-norte
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "9000:9000"
+  beacon-sul:
+    build: .
+    container_name: beacon-sul
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "9001:9001"
+  beacon-leste:
+    build: .
+    container_name: beacon-leste
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "9002:9002"
+  beacon-oeste:
+    build: .
+    container_name: beacon-oeste
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "9003:9003"

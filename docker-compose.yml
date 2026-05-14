@@ -1,0 +1,93 @@
+# Configuracao completa do sistema
+services:
+  gateway-norte:
+    build: ./gateway
+    container_name: gateway-norte
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "8080:8080"
+  gateway-sul:
+    build: ./gateway
+    container_name: gateway-sul
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "8090:8090"
+  gateway-leste:
+    build: ./gateway
+    container_name: gateway-leste
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "8100:8100"
+  gateway-oeste:
+    build: ./gateway
+    container_name: gateway-oeste
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "8110:8110"
+  beacon-norte:
+    build: ./beacon
+    container_name: beacon-norte
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "9000:9000"
+  beacon-sul:
+    build: ./beacon
+    container_name: beacon-sul
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "9001:9001"
+  beacon-leste:
+    build: ./beacon
+    container_name: beacon-leste
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "9002:9002"
+  beacon-oeste:
+    build: ./beacon
+    container_name: beacon-oeste
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "9003:9003"
+  drone-norte-01:
+    build: ./device
+    container_name: drone-norte-01
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "10000:10000"
+  drone-sul-01:
+    build: ./device
+    container_name: drone-sul-01
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "10001:10001"
+  drone-leste-01:
+    build: ./device
+    container_name: drone-leste-01
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "10002:10002"
+  drone-oeste-01:
+    build: ./device
+    container_name: drone-oeste-01
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "10003:10003"
+  client:
+    build: ./client
+    container_name: client
+    env_file: .env
+    network_mode: "host"
+    ports:
+      - "5000:5000"

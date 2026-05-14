@@ -1,0 +1,31 @@
+version: "3.9"
+# Configuracao dos dispositivos moveis (drones)
+services:
+  drone-norte-01:
+    build: .
+    container_name: drone-norte-01
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "10000:10000"
+  drone-sul-01:
+    build: .
+    container_name: drone-sul-01
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "10001:10001"
+  drone-leste-01:
+    build: .
+    container_name: drone-leste-01
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "10002:10002"
+  drone-oeste-01:
+    build: .
+    container_name: drone-oeste-01
+    env_file: ../.env
+    network_mode: "host"
+    ports:
+      - "10003:10003"
