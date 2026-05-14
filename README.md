@@ -85,10 +85,12 @@ Campos obrigatorios:
 
 - `IP_NORTE`, `IP_SUL`, `IP_LESTE`, `IP_OESTE`
 - `GATEWAY_ID`, `GATEWAY_IP`, `GATEWAY_HOST=0.0.0.0`
+- `GATEWAY_TCP_CLIENT_PORT`
 - `DEVICE_ID`, `DEVICE_IP`, `DEVICE_HOST=0.0.0.0`, `DEVICE_CONTROL_PORT`
 - `BEACON_ID`
 
 Restricoes:
+- `GATEWAY_TCP_CLIENT_PORT` deve ser o mesmo em todos os gateways e no client remoto.
 
 - Nao use `localhost` ou `127.0.0.1`.
 - Conexoes usam IPs reais da LAN.

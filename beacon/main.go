@@ -18,56 +18,53 @@ type Message struct {
 	Priority   int    `json:"priority"`
 	Lamport    int    `json:"lamport"`
 	Occurrence string `json:"occurrence"`
+	SensorType string `json:"sensor_type"`
 }
 
 func mustEnv(key string) string {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		log.Fatalf("[FATAL] Variável de ambiente obrigatória ausente: %s", key)
+		log.Fatalf("[FATAL] Variável ausente: %s", key)
 	}
 	return v
 }
 
 func main() {
 	gatewayIP := mustEnv("GATEWAY_IP")
-	clientPort := mustEnv("GATEWAY_TCP_CLIENT_PORT")
+	regPort := mustEnv("GATEWAY_TCP_REG_PORT")
 	setorID := mustEnv("SETOR_ID")
-	targetAddr := fmt.Sprintf("%s:%s", gatewayIP, clientPort)
+	targetAddr := fmt.Sprintf("%s:%s", gatewayIP, regPort)
 
-	log.Printf("[BEACON] Iniciando Sensores do Setor %s", setorID)
+	log.Printf("[BEACON] Agregador de Sensores do Setor %s iniciado.", setorID)
 
 	go startSensor("Radar_Costeiro", mustEnv("RADAR_INTERVAL_MS"), targetAddr, setorID)
 	go startSensor("Sensor_Naval", mustEnv("NAVAL_INTERVAL_MS"), targetAddr, setorID)
 	go startSensor("Boia_Inteligente", mustEnv("BOIA_INTERVAL_MS"), targetAddr, setorID)
 	go startSensor("Estacao_Comunicacao", mustEnv("ESTACAO_INTERVAL_MS"), targetAddr, setorID)
 
-	select {} // Mantém rodando
+	select {}
 }
 
-func startSensor(name, intervalStr, targetAddr, setorID string) {
+func startSensor(sensorName, intervalStr, targetAddr, setorID string) {
 	intervalMs, _ := strconv.Atoi(intervalStr)
 	for {
 		time.Sleep(time.Duration(intervalMs) * time.Millisecond)
 
-		// Gera ocorrência aleatória baseada no tipo de sensor
-		priority := rand.Intn(4) + 1 // 1 a 4
-		occurrence := generateOccurrence(name, priority)
+		priority := rand.Intn(4) + 1
+		occurrence := generateOccurrence(sensorName, priority)
 
 		msg := Message{
 			Type:       "ALERT",
 			GatewayID:  setorID,
 			Priority:   priority,
-			Lamport:    0,
 			Occurrence: occurrence,
+			SensorType: sensorName,
 		}
 
 		conn, err := net.DialTimeout("tcp", targetAddr, 2*time.Second)
 		if err == nil {
 			json.NewEncoder(conn).Encode(msg)
 			conn.Close()
-			log.Printf("[%s] Alerta enviado: %s (Prio: %d)", name, occurrence, priority)
-		} else {
-			log.Printf("[%s] Falha ao enviar alerta para Gateway: %v", name, err)
 		}
 	}
 }
@@ -75,12 +72,12 @@ func startSensor(name, intervalStr, targetAddr, setorID string) {
 func generateOccurrence(sensor string, priority int) string {
 	switch priority {
 	case 1:
-		return fmt.Sprintf("[%s] CRITICA: Embarcação à deriva / Objeto não identificado", sensor)
+		return "CRITICA: Embarcação à deriva / Objeto não identificado"
 	case 2:
-		return fmt.Sprintf("[%s] ALTA: Suspeita de bloqueio / Falha de sinalização", sensor)
+		return "ALTA: Suspeita de bloqueio / Falha de sinalização"
 	case 3:
-		return fmt.Sprintf("[%s] MEDIA: Congestionamento / Inspeção visual", sensor)
+		return "MEDIA: Congestionamento / Inspeção visual urgente"
 	default:
-		return fmt.Sprintf("[%s] BAIXA: Risco ambiental moderado", sensor)
+		return "BAIXA: Replanejamento por risco ambiental"
 	}
 }

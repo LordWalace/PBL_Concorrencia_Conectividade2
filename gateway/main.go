@@ -35,15 +35,15 @@ const (
 
 // Estrutura de Mensagem Universal
 type Message struct {
-	Type        string            `json:"type"`
-	DroneID     string            `json:"drone_id,omitempty"`
-	GatewayID   string            `json:"gateway_id,omitempty"`
-	Priority    int               `json:"priority,omitempty"`
-	Lamport     int               `json:"lamport"`
-	Timestamp   int64             `json:"timestamp,omitempty"`
-	Payload     map[string]string `json:"payload,omitempty"` // Usado para State Sync
-	Content     string            `json:"content,omitempty"`
-	Occurrence  string            `json:"occurrence,omitempty"`
+	Type       string            `json:"type"`
+	DroneID    string            `json:"drone_id,omitempty"`
+	GatewayID  string            `json:"gateway_id,omitempty"`
+	Priority   int               `json:"priority,omitempty"`
+	Lamport    int               `json:"lamport"`
+	Timestamp  int64             `json:"timestamp,omitempty"`
+	Payload    map[string]string `json:"payload,omitempty"` // Usado para State Sync
+	Content    string            `json:"content,omitempty"`
+	Occurrence string            `json:"occurrence,omitempty"`
 }
 
 // Estrutura de Requisição para a Fila de Prioridade
@@ -68,7 +68,7 @@ func (pq PriorityQueue) Less(i, j int) bool {
 	}
 	return pq[i].GatewayID < pq[j].GatewayID // Desempate lexicográfico
 }
-func (pq PriorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
+func (pq PriorityQueue) Swap(i, j int)       { pq[i], pq[j] = pq[j], pq[i] }
 func (pq *PriorityQueue) Push(x interface{}) { *pq = append(*pq, x.(*AlertRequest)) }
 func (pq *PriorityQueue) Pop() interface{} {
 	old := *pq
@@ -80,20 +80,20 @@ func (pq *PriorityQueue) Pop() interface{} {
 
 // Variáveis Globais e Estado do Gateway
 var (
-	gatewayID      string
-	lamportClock   int
-	clockMutex     sync.Mutex
-	stateMutex     sync.Mutex
-	drones         = make(map[string]string) // DroneID -> Status
-	droneOwners    = make(map[string]string) // DroneID -> GatewayID (Dono atual do R-A)
-	droneAddrs     = make(map[string]string) // DroneID -> IP:Port (Para despachar ordens)
-	peers          []string
-	deferred       = make(map[string][]Message) // DroneID -> Lista de requests adiados
-	repliesCount   = make(map[string]int)       // DroneID -> Contagem de Replies recebidos
-	requestingCS   = make(map[string]bool)      // DroneID -> Se este gateway está pedindo R-A
-	myCurrentReq   = make(map[string]Message)   // DroneID -> Minha requisição R-A atual
-	reqQueue       PriorityQueue                // Fila local de ocorrências não atendidas
-	activeBeacons  = make(map[string]time.Time) // Rastreio de beacons locais
+	gatewayID     string
+	lamportClock  int
+	clockMutex    sync.Mutex
+	stateMutex    sync.Mutex
+	drones        = make(map[string]string) // DroneID -> Status
+	droneOwners   = make(map[string]string) // DroneID -> GatewayID (Dono atual do R-A)
+	droneAddrs    = make(map[string]string) // DroneID -> IP:Port (Para despachar ordens)
+	peers         []string
+	deferred      = make(map[string][]Message) // DroneID -> Lista de requests adiados
+	repliesCount  = make(map[string]int)       // DroneID -> Contagem de Replies recebidos
+	requestingCS  = make(map[string]bool)      // DroneID -> Se este gateway está pedindo R-A
+	myCurrentReq  = make(map[string]Message)   // DroneID -> Minha requisição R-A atual
+	reqQueue      PriorityQueue                // Fila local de ocorrências não atendidas
+	activeBeacons = make(map[string]time.Time) // Rastreio de beacons locais
 )
 
 func mustEnv(key string) string {
@@ -211,11 +211,18 @@ func syncStateOnStart() {
 func sendStateSync(conn net.Conn) {
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
+	payload := make(map[string]string)
+	for dID, status := range drones {
+		payload["drone_status_"+dID] = status
+	}
+	for dID, addr := range droneAddrs {
+		payload["drone_addr_"+dID] = addr
+	}
 	msg := Message{
 		Type:      MsgStateSync,
 		GatewayID: gatewayID,
 		Lamport:   tickLamport(0),
-		Payload:   drones,
+		Payload:   payload,
 	}
 	json.NewEncoder(conn).Encode(msg)
 }
@@ -223,12 +230,21 @@ func sendStateSync(conn net.Conn) {
 func receiveStateSync(msg Message) {
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
-	for dID, status := range msg.Payload {
-		if drones[dID] == "" {
-			drones[dID] = status
+	for key, value := range msg.Payload {
+		switch {
+		case strings.HasPrefix(key, "drone_status_"):
+			dID := strings.TrimPrefix(key, "drone_status_")
+			if drones[dID] == "" {
+				drones[dID] = value
+			}
+		case strings.HasPrefix(key, "drone_addr_"):
+			dID := strings.TrimPrefix(key, "drone_addr_")
+			if droneAddrs[dID] == "" {
+				droneAddrs[dID] = value
+			}
 		}
 	}
-	log.Printf("[GATEWAY/%s] Estado sincronizado. Drones: %v", gatewayID, len(drones))
+	log.Printf("[GATEWAY/%s] Estado sincronizado. Drones conhecidos: %v", gatewayID, len(drones))
 }
 
 // ---- ALGORITMO RICART-AGRAWALA MODIFICADO ----
@@ -326,26 +342,32 @@ func processQueueLoop() {
 		time.Sleep(1 * time.Second)
 		stateMutex.Lock()
 		if reqQueue.Len() > 0 {
-			// Procura um drone disponível na malha
+			// Procura um drone disponível na malha que já esteja registrado com endereço
 			var targetDrone string
 			for dID, status := range drones {
-				if status == DroneAvailable {
+				if status == DroneAvailable && droneAddrs[dID] != "" {
 					targetDrone = dID
 					break
 				}
 			}
 
-			if targetDrone != "" && !requestingCS[targetDrone] {
+			if targetDrone == "" {
+				log.Printf("[GATEWAY/%s] Nenhum drone disponível e registrado. Aguardando disponibilidade.", gatewayID)
+				stateMutex.Unlock()
+				continue
+			}
+
+			if !requestingCS[targetDrone] {
 				req := heap.Pop(&reqQueue).(*AlertRequest)
 				log.Printf("[GATEWAY/%s] Iniciando R-A para ocorrência %s no drone %s", gatewayID, req.Occurrence, targetDrone)
-				
+
 				requestingCS[targetDrone] = true
 				repliesCount[targetDrone] = 0
 				myCurrentReq[targetDrone] = Message{
 					Type: MsgRequest, DroneID: targetDrone, GatewayID: gatewayID,
 					Priority: req.Priority, Lamport: req.Lamport,
 				}
-				
+
 				stateMutex.Unlock()
 				msg := myCurrentReq[targetDrone]
 				msg.Lamport = tickLamport(0)
@@ -401,16 +423,36 @@ func handleRegConnection(conn net.Conn) {
 		droneAddrs[msg.DroneID] = msg.Content // Contém IP:Porta do drone
 		stateMutex.Unlock()
 		log.Printf("[DRONE] Registrado: %s em %s", msg.DroneID, msg.Content)
+		broadcastDroneState()
 	} else if msg.Type == MsgRelease {
 		releaseCS(msg.DroneID)
 	}
+}
+
+func broadcastDroneState() {
+	stateMutex.Lock()
+	payload := make(map[string]string)
+	for dID, status := range drones {
+		payload["drone_status_"+dID] = status
+	}
+	for dID, addr := range droneAddrs {
+		payload["drone_addr_"+dID] = addr
+	}
+	stateMutex.Unlock()
+	msg := Message{
+		Type:      MsgStateSync,
+		GatewayID: gatewayID,
+		Lamport:   tickLamport(0),
+		Payload:   payload,
+	}
+	broadcastPeerMsg(msg)
 }
 
 func handleClientConnection(conn net.Conn) {
 	defer conn.Close()
 	var msg Message
 	json.NewDecoder(conn).Decode(&msg)
-	
+
 	if msg.Type == MsgAlert {
 		log.Printf("[BEACON/CLIENT] Alerta recebido: Prio %d, Ocorrencia: %s", msg.Priority, msg.Occurrence)
 		stateMutex.Lock()
