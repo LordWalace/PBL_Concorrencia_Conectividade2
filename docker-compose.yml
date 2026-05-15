@@ -1,93 +1,67 @@
-# Configuracao completa do sistema
+﻿version:  3.9
 services:
   gateway-norte:
     build: ./gateway
     container_name: gateway-norte
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "8080:8080"
+    network_mode: host
   gateway-sul:
     build: ./gateway
     container_name: gateway-sul
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "8090:8090"
+    network_mode: host
   gateway-leste:
     build: ./gateway
     container_name: gateway-leste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "8100:8100"
+    network_mode: host
   gateway-oeste:
     build: ./gateway
     container_name: gateway-oeste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "8110:8110"
+    network_mode: host
   beacon-norte:
     build: ./beacon
     container_name: beacon-norte
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "9000:9000"
+    network_mode: host
   beacon-sul:
     build: ./beacon
     container_name: beacon-sul
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "9001:9001"
+    network_mode: host
   beacon-leste:
     build: ./beacon
     container_name: beacon-leste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "9002:9002"
+    network_mode: host
   beacon-oeste:
     build: ./beacon
     container_name: beacon-oeste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "9003:9003"
+    network_mode: host
   drone-norte-01:
     build: ./device
-    container_name: drone-norte-01
+    container_name: drone-norte
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "10000:10000"
+    network_mode: host
   drone-sul-01:
     build: ./device
-    container_name: drone-sul-01
+    container_name: drone-sul
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "10001:10001"
+    network_mode: host
   drone-leste-01:
     build: ./device
-    container_name: drone-leste-01
+    container_name: drone-leste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "10002:10002"
+    network_mode: host
   drone-oeste-01:
     build: ./device
-    container_name: drone-oeste-01
+    container_name: drone-oeste
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "10003:10003"
+    network_mode: host
   client:
     build: ./client
     container_name: client
     env_file: .env
-    network_mode: "host"
-    ports:
-      - "5000:5000"
+    network_mode: host

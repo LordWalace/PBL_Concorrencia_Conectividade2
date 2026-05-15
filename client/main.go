@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bufio"
@@ -20,7 +20,7 @@ type Message struct {
 }
 
 func mustEnv(key string) string {
-	v := strings.TrimSpace(os.Getenv(key))
+	v := os.Getenv(key)
 	if v == "" {
 		log.Fatalf("[FATAL] Variável de ambiente obrigatória ausente: %s", key)
 	}
@@ -37,93 +37,223 @@ func main() {
 	}
 
 	reader := bufio.NewReader(os.Stdin)
+	sectors := []string{"Norte", "Sul", "Leste", "Oeste"}
+
+	fmt.Println("======================================")
+	fmt.Println("  CLIENTE DO DESBLOQUEIO DO ESTREITO")
+	fmt.Println("======================================")
 
 	for {
-		fmt.Println("\n=======================================")
-		fmt.Println("  PAINEL DO ESTREITO DE HORMUZ (PBL 2) ")
-		fmt.Println("=======================================")
+		fmt.Println("\nMenu:")
 		fmt.Println("1 - Injetar Alerta Manual")
 		fmt.Println("2 - Ver Status do Estreito")
+		fmt.Println("3 - Ver Log de Eventos")
 		fmt.Println("0 - Sair")
-		fmt.Print("Opção: ")
+		fmt.Print("Escolha uma opção: ")
 
-		opt, _ := reader.ReadString('\n')
-		opt = strings.TrimSpace(opt)
+		choice := readNumber(reader, 0, 3)
 
-		switch opt {
-		case "1":
-			sendManualAlert(reader, gateways)
-		case "2":
-			printStatus(gateways)
-		case "0":
-			os.Exit(0)
-		default:
-			fmt.Println("Opção inválida.")
+		switch choice {
+		case 1:
+			sendManualAlert(reader, sectors, gateways)
+		case 2:
+			printStatus(sectors, gateways)
+		case 3:
+			viewEventLog(reader, sectors, gateways)
+		case 0:
+			fmt.Println("Encerrando cliente.")
+			return
 		}
 	}
 }
 
-func sendManualAlert(reader *bufio.Reader, gateways map[string]string) {
-	fmt.Print("Selecione o Setor (Norte, Sul, Leste, Oeste): ")
-	setor, _ := reader.ReadString('\n')
-	setor = strings.TrimSpace(setor)
+func sendManualAlert(reader *bufio.Reader, sectors []string, gateways map[string]string) {
+	fmt.Println("\n--- INJETAR ALERTA MANUAL ---")
+	for i, setor := range sectors {
+		fmt.Printf("%d - %s\n", i+1, setor)
+	}
+	fmt.Print("Selecione o setor (1-4): ")
+	sectorIndex := readNumber(reader, 1, len(sectors)) - 1
+	setorEscolhido := sectors[sectorIndex]
 
-	target, exists := gateways[setor]
-	if !exists {
-		fmt.Println("Setor inválido.")
-		return
+	fmt.Println("\nPrioridade:")
+	fmt.Println("1 - Crítica")
+	fmt.Println("2 - Alta")
+	fmt.Println("3 - Média")
+	fmt.Println("4 - Baixa")
+	fmt.Print("Escolha a prioridade: ")
+	priority := readNumber(reader, 1, 4)
+
+	occurrences := []string{
+		"embarcação civil à deriva",
+		"objeto não identificado",
+		"suspeita de bloqueio parcial de rota",
+		"falha de sinalização",
+		"congestionamento em corredor marítimo",
+		"inspeção visual urgente",
+		"replanejamento de tráfego por risco ambiental",
 	}
 
-	fmt.Println("Prioridade: 1(Crítica), 2(Alta), 3(Média), 4(Baixa)")
-	fmt.Print("Prioridade: ")
-	pStr, _ := reader.ReadString('\n')
-	p, _ := strconv.Atoi(strings.TrimSpace(pStr))
-
-	fmt.Print("Descrição: ")
-	desc, _ := reader.ReadString('\n')
+	fmt.Println("\nTipo de ocorrência:")
+	for i, desc := range occurrences {
+		fmt.Printf("%d - %s\n", i+1, desc)
+	}
+	fmt.Print("Escolha o tipo de ocorrência: ")
+	occurrenceIndex := readNumber(reader, 1, len(occurrences)) - 1
+	occurrence := occurrences[occurrenceIndex]
 
 	msg := Message{
 		Type:       "ALERT",
-		Priority:   p,
-		Occurrence: "[MANUAL] " + strings.TrimSpace(desc),
+		Priority:   priority,
+		Occurrence: occurrence,
 	}
 
-	conn, err := net.Dial("tcp", target)
-	if err != nil {
-		fmt.Println("[ERRO] Falha ao conectar no Gateway do setor.")
-		return
-	}
-	defer conn.Close()
-	json.NewEncoder(conn).Encode(msg)
-	fmt.Println("[OK] Alerta enviado com sucesso.")
+	fmt.Printf("[CLIENTE] Enviando alerta para %s com prioridade %d e ocorrência '%s'\n", setorEscolhido, priority, occurrence)
+	sendWithFallback(msg, setorEscolhido, sectors, gateways)
 }
 
-func printStatus(gateways map[string]string) {
-	fmt.Println("\n--- STATUS GLOBAL DOS SETORES ---")
-	for name, addr := range gateways {
+func printStatus(sectors []string, gateways map[string]string) {
+	fmt.Println("\n--- STATUS DO ESTREITO ---")
+	globalDrones := make(map[string]string)
+
+	for _, sector := range sectors {
+		addr := gateways[sector]
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err != nil {
-			fmt.Printf("[Setor %s] OFFLINE\n", name)
+			fmt.Printf("[Setor %s] OFFLINE\n", sector)
 			continue
 		}
-		
-		msg := Message{Type: "STATUS_REQ"}
-		json.NewEncoder(conn).Encode(msg)
-		
-		var rep Message
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		err = json.NewDecoder(conn).Decode(&rep)
+
+		request := Message{Type: "STATUS_REQ"}
+		if err := json.NewEncoder(conn).Encode(request); err != nil {
+			fmt.Printf("[Setor %s] Erro ao enviar requisição de status: %v\n", sector, err)
+			conn.Close()
+			continue
+		}
+
+		var reply Message
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		err = json.NewDecoder(conn).Decode(&reply)
 		conn.Close()
 
-		if err == nil && rep.Type == "STATUS_REP" {
-			fmt.Printf("[Setor %s] ONLINE | Fila: %s\n", name, rep.Payload["queue_size"])
-			for k, v := range rep.Payload {
-				if strings.HasPrefix(k, "drone_") {
-					fmt.Printf("   -> %s: %s\n", k, v)
+		if err != nil || reply.Type != "STATUS_REP" {
+			fmt.Printf("[Setor %s] OFFLINE ou API de status indisponível\n", sector)
+			continue
+		}
+
+		fmt.Printf("[Setor %s] ONLINE | Fila pendente: %s\n", sector, reply.Payload["queue_size"])
+		for key, value := range reply.Payload {
+			if strings.HasPrefix(key, "drone_") {
+				droneID := strings.TrimPrefix(key, "drone_")
+				fmt.Printf("   -> Drone %s: %s\n", droneID, value)
+				if _, exists := globalDrones[droneID]; !exists {
+					globalDrones[droneID] = value
 				}
 			}
-		} else {
-			fmt.Printf("[Setor %s] OFFLINE (Timeout)\n", name)
 		}
+	}
+
+	fmt.Println("\n--- STATUS GLOBAL DA FROTA ---")
+	if len(globalDrones) == 0 {
+		fmt.Println("Nenhum drone conhecido no momento.")
+		return
+	}
+	for droneID, status := range globalDrones {
+		fmt.Printf("   %s => %s\n", droneID, status)
+	}
+}
+
+func viewEventLog(reader *bufio.Reader, sectors []string, gateways map[string]string) {
+	fmt.Println("\n--- LOG DE EVENTOS ---")
+	fmt.Print("Quantos eventos deseja ver por setor? ")
+	eventCount := readNumber(reader, 1, 20)
+
+	for _, sector := range sectors {
+		addr := gateways[sector]
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			fmt.Printf("[Setor %s] OFFLINE ou indisponível para logs\n", sector)
+			continue
+		}
+
+		request := Message{Type: "EVENTS_REQ", Payload: map[string]string{"count": strconv.Itoa(eventCount)}}
+		if err := json.NewEncoder(conn).Encode(request); err != nil {
+			fmt.Printf("[Setor %s] Falha ao solicitar eventos: %v\n", sector, err)
+			conn.Close()
+			continue
+		}
+
+		var reply Message
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		err = json.NewDecoder(conn).Decode(&reply)
+		conn.Close()
+
+		if err != nil {
+			fmt.Printf("[Setor %s] Falha ao receber eventos: %v\n", sector, err)
+			continue
+		}
+
+		if reply.Type != "EVENTS_REP" {
+			fmt.Printf("[Setor %s] API de eventos não disponível\n", sector)
+			continue
+		}
+
+		fmt.Printf("[Setor %s] Eventos recebidos:\n", sector)
+		eventIndex := 1
+		for eventIndex <= eventCount {
+			key := fmt.Sprintf("event_%d", eventIndex)
+			if value, ok := reply.Payload[key]; ok {
+				fmt.Printf("   %d - %s\n", eventIndex, value)
+			} else {
+				break
+			}
+			eventIndex++
+		}
+		if eventIndex == 1 {
+			fmt.Println("   Nenhum evento disponível.")
+		}
+	}
+}
+
+func readNumber(reader *bufio.Reader, min, max int) int {
+	for {
+		line, _ := reader.ReadString('\n')
+		value, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || value < min || value > max {
+			fmt.Printf("Entrada inválida. Digite um número entre %d e %d: ", min, max)
+			continue
+		}
+		return value
+	}
+}
+
+func sendWithFallback(msg Message, initialSector string, sectors []string, gateways map[string]string) {
+	order := make([]string, 0, len(sectors))
+	order = append(order, initialSector)
+	for _, sector := range sectors {
+		if sector != initialSector {
+			order = append(order, sector)
+		}
+	}
+
+	for {
+		for _, sector := range order {
+			target := gateways[sector]
+			conn, err := net.DialTimeout("tcp", target, 3*time.Second)
+			if err != nil {
+				continue
+			}
+			if err := json.NewEncoder(conn).Encode(msg); err != nil {
+				fmt.Printf("[CLIENTE] Falha ao enviar alerta para %s: %v\n", sector, err)
+				conn.Close()
+				continue
+			}
+			conn.Close()
+			fmt.Printf("[CLIENTE] Alerta enviado com sucesso para %s (%s)\n", sector, target)
+			return
+		}
+
+		fmt.Println("[CLIENTE] Nenhum gateway disponível. Tentando novamente em 5 segundos...")
+		time.Sleep(5 * time.Second)
 	}
 }
