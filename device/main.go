@@ -183,8 +183,11 @@ func heartbeatLoop(controlAddr string) {
 func sendHeartbeat() error {
 	stateMutex.Lock()
 	addr := currentGateway
-	status := currentStatus()
-	missionInfo := currentMissionInfo()
+	status := statusValue
+	missionInfo := "sem missão"
+	if missionActive {
+		missionInfo = fmt.Sprintf("em missão até %s", missionEnd.Format(time.RFC3339))
+	}
 	stateMutex.Unlock()
 
 	if addr == "" {

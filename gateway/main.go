@@ -92,27 +92,31 @@ func (pq *PriorityQueue) Pop() interface{} {
 }
 
 var (
-	gatewayID     string
-	gatewayIP     string
-	gatewayHost   string
-	regPort       string
-	clientPort    string
-	peerPort      string
-	peerAddrsByID map[string]string
-	peers         []string
-	lamportClock  int
-	lamportMutex  sync.Mutex
-	stateMutex    sync.Mutex
-	drones        = make(map[string]*DroneState)
-	activeBeacons = make(map[string]time.Time)
-	droneOwners   = make(map[string]string)
-	deferred      = make(map[string][]Message)
-	repliesCount  = make(map[string]int)
-	requestingCS  = make(map[string]bool)
-	myCurrentReq  = make(map[string]Message)
-	reqQueue      PriorityQueue
-	eventLog      []string
-	eventMutex    sync.Mutex
+	gatewayID         string
+	gatewayIP         string
+	gatewayHost       string
+	regPort           string
+	clientPort        string
+	peerPort          string
+	peerAddrsByID     map[string]string
+	peers             []string
+	peerIDs           []string
+	peerOfflineUntil  = make(map[string]time.Time)
+	replyChannels     = make(map[string]map[string]chan struct{})
+	replyChannelMutex sync.Mutex
+	lamportClock      int
+	lamportMutex      sync.Mutex
+	stateMutex        sync.Mutex
+	drones            = make(map[string]*DroneState)
+	activeBeacons     = make(map[string]time.Time)
+	droneOwners       = make(map[string]string)
+	deferred          = make(map[string][]Message)
+	repliesCount      = make(map[string]int)
+	requestingCS      = make(map[string]bool)
+	myCurrentReq      = make(map[string]Message)
+	reqQueue          PriorityQueue
+	eventLog          []string
+	eventMutex        sync.Mutex
 )
 
 func mustEnv(key string) string {
@@ -144,6 +148,7 @@ func main() {
 			continue
 		}
 		peers = append(peers, addr)
+		peerIDs = append(peerIDs, id)
 	}
 
 	log.Printf("[GATEWAY/%s] Iniciando gateway em %s", gatewayID, gatewayHost)
@@ -263,11 +268,11 @@ func handleDeviceRegistration(msg Message) {
 	drone.ControlAddr = msg.Content
 	drone.GatewayAtual = gatewayID
 	drone.Status = msg.Status
-	drone.MissionActive = strings.EqualFold(msg.Status, DroneBusy) || strings.Contains(msg.MissionInfo, "missão")
+	drone.MissionActive = strings.EqualFold(msg.Status, DroneBusy)
 	drone.MissionInfo = msg.MissionInfo
 	drone.LastHeartbeat = time.Now()
 	drone.LastUpdate = time.Now()
-	activeBeacons[msg.DroneID] = time.Now()
+	activeBeacons[msg.DroneID] = drone.LastHeartbeat
 	stateMutex.Unlock()
 
 	logEvent(fmt.Sprintf("[DRONE] Drone %s registrado com status %s", msg.DroneID, msg.Status))
@@ -281,14 +286,16 @@ func handleDroneHeartbeat(msg Message) {
 		drone = &DroneState{ID: msg.DroneID}
 		drones[msg.DroneID] = drone
 	}
-	drone.ControlAddr = msg.Content
+	if msg.Content != "" {
+		drone.ControlAddr = msg.Content
+	}
 	drone.GatewayAtual = gatewayID
 	drone.Status = msg.Status
-	drone.MissionActive = strings.EqualFold(msg.Status, DroneBusy) || strings.Contains(msg.MissionInfo, "missão")
+	drone.MissionActive = strings.EqualFold(msg.Status, DroneBusy)
 	drone.MissionInfo = msg.MissionInfo
 	drone.LastHeartbeat = time.Now()
 	drone.LastUpdate = time.Now()
-	activeBeacons[msg.DroneID] = time.Now()
+	activeBeacons[msg.DroneID] = drone.LastHeartbeat
 	stateMutex.Unlock()
 
 	logEvent(fmt.Sprintf("[HEARTBEAT] Drone %s heartbeat recebido", msg.DroneID))
@@ -372,26 +379,19 @@ func handleRARequest(msg Message) {
 
 func handleRAReply(msg Message) {
 	stateMutex.Lock()
-	defer stateMutex.Unlock()
-	if requestingCS[msg.DroneID] {
-		repliesCount[msg.DroneID]++
-		log.Printf("[GATEWAY/%s] [R-A] Reply recebido para drone %s de %s", gatewayID, msg.DroneID, msg.GatewayID)
-		if repliesCount[msg.DroneID] >= requiredReplies() {
-			requestingCS[msg.DroneID] = false
-			droneOwners[msg.DroneID] = gatewayID
-			if drone, ok := drones[msg.DroneID]; ok {
-				drone.Status = DroneBusy
-				drone.MissionActive = true
-			}
-			logEvent(fmt.Sprintf("[R-A] Região crítica obtida para drone %s", msg.DroneID))
-			log.Printf("[GATEWAY/%s] [R-A] Região crítica obtida para drone %s", gatewayID, msg.DroneID)
-			go dispatchDrone(msg.DroneID)
+	if !requestingCS[msg.DroneID] {
+		stateMutex.Unlock()
+		return
+	}
+	repliesCount[msg.DroneID]++
+	stateMutex.Unlock()
+	log.Printf("[GATEWAY/%s] [R-A] Reply recebido para drone %s de %s", gatewayID, msg.DroneID, msg.GatewayID)
+	if ch := getReplyChannel(msg.DroneID, msg.GatewayID); ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
 		}
 	}
-}
-
-func requiredReplies() int {
-	return len(peers)/2 + 1
 }
 
 func handleRARelease(msg Message) {
@@ -478,28 +478,96 @@ func processQueueLoop() {
 
 			msg := myCurrentReq[targetDrone]
 			msg.Lamport = tickLamport(0)
-			broadcastPeerMsg(msg)
-			go waitForReplies(targetDrone)
+			go waitForReplies(targetDrone, msg)
 			continue
 		}
 		stateMutex.Unlock()
 	}
 }
 
-func waitForReplies(droneID string) {
-	time.Sleep(5 * time.Second)
+func waitForReplies(droneID string, msg Message) {
 	stateMutex.Lock()
-	defer stateMutex.Unlock()
-	if requestingCS[droneID] && repliesCount[droneID] >= requiredReplies() {
+	if !requestingCS[droneID] {
+		stateMutex.Unlock()
+		return
+	}
+	activePeers := []string{}
+	for _, peerID := range peerIDs {
+		if time.Now().Before(peerOfflineUntil[peerID]) {
+			continue
+		}
+		activePeers = append(activePeers, peerID)
+	}
+	stateMutex.Unlock()
+
+	if len(activePeers) == 0 {
+		stateMutex.Lock()
 		requestingCS[droneID] = false
 		droneOwners[droneID] = gatewayID
 		if drone, ok := drones[droneID]; ok {
 			drone.Status = DroneBusy
 			drone.MissionActive = true
 		}
-		log.Printf("[GATEWAY/%s] [R-A] Região crítica alcançada por timeout para drone %s", gatewayID, droneID)
+		stateMutex.Unlock()
+		logEvent(fmt.Sprintf("[R-A] Região crítica obtida para drone %s sem peers ativos", droneID))
+		log.Printf("[GATEWAY/%s] [R-A] Região crítica obtida para drone %s sem peers ativos", gatewayID, droneID)
 		go dispatchDrone(droneID)
+		return
 	}
+
+	replyChannelMutex.Lock()
+	replyChannels[droneID] = make(map[string]chan struct{}, len(activePeers))
+	for _, peerID := range activePeers {
+		replyChannels[droneID][peerID] = make(chan struct{}, 1)
+	}
+	replyChannelMutex.Unlock()
+
+	for _, peerID := range activePeers {
+		sendDirect(peerID, msg)
+	}
+
+	gotReplies := 0
+	for _, peerID := range activePeers {
+		ch := getReplyChannel(droneID, peerID)
+		if ch == nil {
+			continue
+		}
+		select {
+		case <-ch:
+			gotReplies++
+		case <-time.After(4 * time.Second):
+			stateMutex.Lock()
+			peerOfflineUntil[peerID] = time.Now().Add(15 * time.Second)
+			stateMutex.Unlock()
+			log.Printf("[GATEWAY/%s] [R-A] Peer sem resposta ou offline: %s", gatewayID, peerID)
+		}
+	}
+
+	replyChannelMutex.Lock()
+	delete(replyChannels, droneID)
+	replyChannelMutex.Unlock()
+
+	stateMutex.Lock()
+	if requestingCS[droneID] && gotReplies == len(activePeers) {
+		requestingCS[droneID] = false
+		droneOwners[droneID] = gatewayID
+		if drone, ok := drones[droneID]; ok {
+			drone.Status = DroneBusy
+			drone.MissionActive = true
+		}
+		stateMutex.Unlock()
+		logEvent(fmt.Sprintf("[R-A] Região crítica obtida para drone %s", droneID))
+		log.Printf("[GATEWAY/%s] [R-A] Região crítica obtida para drone %s", gatewayID, droneID)
+		go dispatchDrone(droneID)
+		return
+	}
+	if requestingCS[droneID] {
+		requestingCS[droneID] = false
+		if req, ok := myCurrentReq[droneID]; ok {
+			heap.Push(&reqQueue, &AlertRequest{Occurrence: req.Occurrence, Priority: req.Priority, Lamport: req.Lamport, GatewayID: req.GatewayID, Timestamp: time.Now().Unix()})
+		}
+	}
+	stateMutex.Unlock()
 }
 
 func dispatchDrone(droneID string) {
@@ -611,12 +679,12 @@ func receiveStateSync(msg Message) {
 			continue
 		}
 		remainder := strings.TrimPrefix(key, "drone_")
-		split := strings.SplitN(remainder, "_", 2)
-		if len(split) != 2 {
+		last := strings.LastIndex(remainder, "_")
+		if last <= 0 {
 			continue
 		}
-		droneID := split[0]
-		field := split[1]
+		droneID := remainder[:last]
+		field := remainder[last+1:]
 		drone, ok := drones[droneID]
 		if !ok {
 			drone = &DroneState{ID: droneID}
@@ -656,22 +724,25 @@ func monitorLocalDroneHeartbeats() {
 	defer ticker.Stop()
 	for range ticker.C {
 		stateMutex.Lock()
-		localCopy := make(map[string]time.Time)
-		for id, ts := range activeBeacons {
-			localCopy[id] = ts
+		localCopy := make(map[string]struct {
+			last    time.Time
+			gateway string
+			status  string
+		})
+		for id, drone := range drones {
+			localCopy[id] = struct {
+				last    time.Time
+				gateway string
+				status  string
+			}{last: drone.LastHeartbeat, gateway: drone.GatewayAtual, status: drone.Status}
 		}
 		stateMutex.Unlock()
 
-		for droneID, last := range localCopy {
-			if time.Since(last) > 12*time.Second {
-				stateMutex.Lock()
-				drone, ok := drones[droneID]
-				if ok && drone.GatewayAtual == gatewayID && drone.Status != DroneFailed {
-					stateMutex.Unlock()
+		for droneID, info := range localCopy {
+			if time.Since(info.last) > 15*time.Second {
+				if info.gateway == gatewayID && info.status != DroneFailed {
 					handleLocalDroneFailure(droneID, "heartbeat ausente")
-					continue
 				}
-				stateMutex.Unlock()
 			}
 		}
 	}
@@ -701,6 +772,15 @@ func sendDirect(targetGateway string, msg Message) {
 	}
 	defer conn.Close()
 	json.NewEncoder(conn).Encode(msg)
+}
+
+func getReplyChannel(droneID, peerID string) chan struct{} {
+	replyChannelMutex.Lock()
+	defer replyChannelMutex.Unlock()
+	if peerMap, ok := replyChannels[droneID]; ok {
+		return peerMap[peerID]
+	}
+	return nil
 }
 
 func tickLamport(recv int) int {

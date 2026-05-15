@@ -20,16 +20,16 @@ fi
 sector=$(echo "$sector" | tr '[:upper:]' '[:lower:]')
 case "$sector" in
   norte)
-    drone=drone-norte-01
+    drone=drone-norte
     ;;
   sul)
-    drone=drone-sul-01
+    drone=drone-sul
     ;;
   leste)
-    drone=drone-leste-01
+    drone=drone-leste
     ;;
   oeste)
-    drone=drone-oeste-01
+    drone=drone-oeste
     ;;
   *)
     echo "Setor inválido: $sector"

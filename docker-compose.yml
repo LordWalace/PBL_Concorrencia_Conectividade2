@@ -1,5 +1,4 @@
-﻿version:  3.9
-services:
+﻿services:
   gateway-norte:
     build: ./gateway
     container_name: gateway-norte
@@ -40,22 +39,22 @@ services:
     container_name: beacon-oeste
     env_file: .env
     network_mode: host
-  drone-norte-01:
+  drone-norte:
     build: ./device
     container_name: drone-norte
     env_file: .env
     network_mode: host
-  drone-sul-01:
+  drone-sul:
     build: ./device
     container_name: drone-sul
     env_file: .env
     network_mode: host
-  drone-leste-01:
+  drone-leste:
     build: ./device
     container_name: drone-leste
     env_file: .env
     network_mode: host
-  drone-oeste-01:
+  drone-oeste:
     build: ./device
     container_name: drone-oeste
     env_file: .env

@@ -142,13 +142,39 @@ func printStatus(sectors []string, gateways map[string]string) {
 		}
 
 		fmt.Printf("[Setor %s] ONLINE | Fila pendente: %s\n", sector, reply.Payload["queue_size"])
+		droneStates := make(map[string]map[string]string)
 		for key, value := range reply.Payload {
-			if strings.HasPrefix(key, "drone_") {
-				droneID := strings.TrimPrefix(key, "drone_")
-				fmt.Printf("   -> Drone %s: %s\n", droneID, value)
-				if _, exists := globalDrones[droneID]; !exists {
-					globalDrones[droneID] = value
+			if !strings.HasPrefix(key, "drone_") {
+				continue
+			}
+			remainder := strings.TrimPrefix(key, "drone_")
+			knownFields := []string{"status", "gateway_atual", "mission_active", "mission_info", "control_addr", "setor_base", "ultima_atualizacao"}
+			for _, field := range knownFields {
+				suffix := "_" + field
+				if strings.HasSuffix(remainder, suffix) {
+					droneID := remainder[:len(remainder)-len(suffix)]
+					if _, exists := droneStates[droneID]; !exists {
+						droneStates[droneID] = make(map[string]string)
+					}
+					droneStates[droneID][field] = value
+					break
 				}
+			}
+		}
+
+		for droneID, fields := range droneStates {
+			displayID := cleanDroneName(droneID)
+			sectorName := strings.TrimPrefix(displayID, "Drone_")
+			mission := "Nenhuma"
+			if fields["mission_active"] == "true" {
+				mission = "Em andamento"
+			}
+			fmt.Printf("   -> %s\n", displayID)
+			fmt.Printf("      Status: %s\n", fields["status"])
+			fmt.Printf("      Setor: %s\n", sectorName)
+			fmt.Printf("      Missão: %s\n", mission)
+			if _, exists := globalDrones[displayID]; !exists {
+				globalDrones[displayID] = fields["status"]
 			}
 		}
 	}
@@ -161,6 +187,17 @@ func printStatus(sectors []string, gateways map[string]string) {
 	for droneID, status := range globalDrones {
 		fmt.Printf("   %s => %s\n", droneID, status)
 	}
+}
+
+func cleanDroneName(droneID string) string {
+	parts := strings.Split(droneID, "_")
+	if len(parts) > 1 {
+		last := parts[len(parts)-1]
+		if _, err := strconv.Atoi(last); err == nil {
+			return strings.Join(parts[:len(parts)-1], "_")
+		}
+	}
+	return droneID
 }
 
 func viewEventLog(reader *bufio.Reader, sectors []string, gateways map[string]string) {

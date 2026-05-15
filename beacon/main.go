@@ -122,7 +122,19 @@ func sendAlert(sensorPrefix string, alert BeaconAlert, gatewayIP, gatewayPort st
 	}
 	defer conn.Close()
 
-	payload, err := json.Marshal(alert)
+	message := map[string]interface{}{
+		"type":       "ALERT",
+		"occurrence": alert.OccurrenceType,
+		"priority":   alert.Priority,
+		"lamport":    alert.LamportClock,
+		"timestamp":  alert.TimestampUnix,
+		"payload": map[string]string{
+			"beacon_id":   alert.BeaconID,
+			"sensor_type": alert.SensorType,
+		},
+	}
+
+	payload, err := json.Marshal(message)
 	if err != nil {
 		log.Printf("%s Falha ao serializar alerta: %v", sensorPrefix, err)
 		return
