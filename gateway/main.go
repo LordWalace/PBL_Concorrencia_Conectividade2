@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"container/heap"
@@ -62,11 +62,13 @@ type DroneState struct {
 }
 
 type AlertRequest struct {
-	Occurrence string
-	Priority   int
-	Lamport    int
-	GatewayID  string
-	Timestamp  int64
+	Occurrence     string
+	Priority       int
+	Lamport        int
+	GatewayID      string
+	Timestamp      int64
+	RetryCount     int
+	SuspendedUntil time.Time
 }
 
 type PriorityQueue []*AlertRequest
@@ -87,8 +89,23 @@ func (pq *PriorityQueue) Pop() interface{} {
 	old := *pq
 	n := len(old)
 	item := old[n-1]
+	old[n-1] = nil // evita memory leak ao remover o item
 	*pq = old[:n-1]
 	return item
+}
+
+func nextReadyRequestIndex() int {
+	now := time.Now()
+	best := -1
+	for i, req := range reqQueue {
+		if !req.SuspendedUntil.IsZero() && now.Before(req.SuspendedUntil) {
+			continue
+		}
+		if best == -1 || reqQueue.Less(i, best) {
+			best = i
+		}
+	}
+	return best
 }
 
 var (
@@ -114,6 +131,7 @@ var (
 	repliesCount      = make(map[string]int)
 	requestingCS      = make(map[string]bool)
 	myCurrentReq      = make(map[string]Message)
+	currentReqRetries = make(map[string]int)
 	reqQueue          PriorityQueue
 	eventLog          []string
 	eventMutex        sync.Mutex
@@ -412,7 +430,7 @@ func releaseCS(droneID string, available bool) {
 	stateMutex.Lock()
 	deferredList := deferred[droneID]
 	deferred[droneID] = nil
-	req := myCurrentReq[droneID]
+	currentReq := myCurrentReq[droneID]
 	myCurrentReq[droneID] = Message{}
 	requestingCS[droneID] = false
 	repliesCount[droneID] = 0
@@ -436,9 +454,9 @@ func releaseCS(droneID string, available bool) {
 		sendDirect(pending.GatewayID, reply)
 	}
 
-	if !available && req.Type != "" && req.GatewayID == gatewayID {
+	if !available && currentReq.Type != "" {
 		stateMutex.Lock()
-		heap.Push(&reqQueue, &AlertRequest{Occurrence: req.Occurrence, Priority: req.Priority, Lamport: req.Lamport, GatewayID: req.GatewayID, Timestamp: req.Timestamp})
+		heap.Push(&reqQueue, &AlertRequest{Occurrence: currentReq.Occurrence, Priority: currentReq.Priority, Lamport: currentReq.Lamport, GatewayID: currentReq.GatewayID, Timestamp: currentReq.Timestamp})
 		stateMutex.Unlock()
 		logEvent(fmt.Sprintf("[R-A] Reenfileirando requisição do drone %s após falha", droneID))
 		log.Printf("[GATEWAY/%s] [R-A] Reenfileirando requisição do drone %s após falha", gatewayID, droneID)
@@ -450,6 +468,12 @@ func processQueueLoop() {
 		time.Sleep(1 * time.Second)
 		stateMutex.Lock()
 		if reqQueue.Len() == 0 {
+			stateMutex.Unlock()
+			continue
+		}
+
+		reqIndex := nextReadyRequestIndex()
+		if reqIndex == -1 {
 			stateMutex.Unlock()
 			continue
 		}
@@ -468,11 +492,15 @@ func processQueueLoop() {
 		}
 
 		if !requestingCS[targetDrone] {
-			req := heap.Pop(&reqQueue).(*AlertRequest)
+			req := heap.Remove(&reqQueue, reqIndex).(*AlertRequest)
+			if !req.SuspendedUntil.IsZero() && time.Now().After(req.SuspendedUntil) {
+				req.SuspendedUntil = time.Time{}
+			}
 			logEvent(fmt.Sprintf("[R-A] Iniciando R-A para drone %s com prioridade %d", targetDrone, req.Priority))
 			log.Printf("[GATEWAY/%s] [R-A] Iniciando R-A para drone %s com prioridade %d", gatewayID, targetDrone, req.Priority)
 			requestingCS[targetDrone] = true
 			repliesCount[targetDrone] = 0
+			currentReqRetries[targetDrone] = req.RetryCount
 			myCurrentReq[targetDrone] = Message{Type: MsgRequest, DroneID: targetDrone, GatewayID: gatewayID, Priority: req.Priority, Lamport: req.Lamport, Occurrence: req.Occurrence}
 			stateMutex.Unlock()
 
@@ -562,10 +590,8 @@ func waitForReplies(droneID string, msg Message) {
 		return
 	}
 	if requestingCS[droneID] {
-		requestingCS[droneID] = false
-		if req, ok := myCurrentReq[droneID]; ok {
-			heap.Push(&reqQueue, &AlertRequest{Occurrence: req.Occurrence, Priority: req.Priority, Lamport: req.Lamport, GatewayID: req.GatewayID, Timestamp: time.Now().Unix()})
-		}
+		req := myCurrentReq[droneID]
+		heap.Push(&reqQueue, &AlertRequest{Occurrence: req.Occurrence, Priority: req.Priority, Lamport: req.Lamport, GatewayID: req.GatewayID, Timestamp: time.Now().Unix(), RetryCount: currentReqRetries[droneID]})
 	}
 	stateMutex.Unlock()
 }
@@ -589,7 +615,7 @@ func dispatchDrone(droneID string) {
 	defer conn.Close()
 
 	msg := Message{Type: "DISPATCH", DroneID: droneID, GatewayID: gatewayID, Lamport: tickLamport(0)}
-	if err := json.NewEncoder(conn).Encode(msg); err != nil {
+	if err := json.NewEncoder(conn).Encode(&msg); err != nil {
 		log.Printf("[GATEWAY/%s] [FALHA] Erro ao enviar DISPATCH ao drone %s: %v", gatewayID, droneID, err)
 		handleLocalDroneFailure(droneID, "envio DISPATCH falhou")
 		return
@@ -640,8 +666,24 @@ func handleLocalDroneFailure(droneID, reason string) {
 	broadcastPeerMsg(Message{Type: MsgDroneFailed, DroneID: droneID, GatewayID: gatewayID, Lamport: tickLamport(0)})
 
 	if downOwner && currentReq.Type != "" {
+		retryCount := currentReqRetries[droneID] + 1
+		req := &AlertRequest{
+			Occurrence: currentReq.Occurrence,
+			Priority:   currentReq.Priority,
+			Lamport:    currentReq.Lamport,
+			GatewayID:  currentReq.GatewayID,
+			Timestamp:  currentReq.Timestamp,
+			RetryCount: retryCount,
+		}
+		if retryCount >= 3 {
+			req.SuspendedUntil = time.Now().Add(15 * time.Second)
+			req.RetryCount = 0
+			logEvent(fmt.Sprintf("[R-A] Requisição de %s suspensa por 15s após 3 falhas", currentReq.Occurrence))
+			log.Printf("[GATEWAY/%s] [R-A] Requisição de %s suspensa por 15s após 3 falhas", gatewayID, currentReq.Occurrence)
+		}
 		stateMutex.Lock()
-		heap.Push(&reqQueue, &AlertRequest{Occurrence: currentReq.Occurrence, Priority: currentReq.Priority, Lamport: currentReq.Lamport, GatewayID: currentReq.GatewayID, Timestamp: currentReq.Timestamp})
+		heap.Push(&reqQueue, req)
+		delete(currentReqRetries, droneID)
 		stateMutex.Unlock()
 		logEvent(fmt.Sprintf("[R-A] Reenfileirando requisição do drone %s após falha", droneID))
 		log.Printf("[GATEWAY/%s] [R-A] Reenfileirando requisição do drone %s após falha", gatewayID, droneID)

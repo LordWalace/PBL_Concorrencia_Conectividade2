@@ -3,64 +3,160 @@
     build: ./gateway
     container_name: gateway-norte
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_ID=${GATEWAY_ID_NORTE}
+      - GATEWAY_IP=${GATEWAY_IP_NORTE}
+      - GATEWAY_HOST=${GATEWAY_HOST_NORTE}
+      - SETOR_ID=${SETOR_ID_NORTE}
+      - DEVICE_ID=${DEVICE_ID_NORTE}
+      - DEVICE_IP=${DEVICE_IP_NORTE}
+      - DEVICE_HOST=${DEVICE_HOST_NORTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_NORTE}
+    networks:
+      hormuz_net:
+        ipv4_address: ${GATEWAY_IP_NORTE}
   gateway-sul:
     build: ./gateway
     container_name: gateway-sul
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_ID=${GATEWAY_ID_SUL}
+      - GATEWAY_IP=${GATEWAY_IP_SUL}
+      - GATEWAY_HOST=${GATEWAY_HOST_SUL}
+      - SETOR_ID=${SETOR_ID_SUL}
+      - DEVICE_ID=${DEVICE_ID_SUL}
+      - DEVICE_IP=${DEVICE_IP_SUL}
+      - DEVICE_HOST=${DEVICE_HOST_SUL}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_SUL}
+    networks:
+      hormuz_net:
+        ipv4_address: ${GATEWAY_IP_SUL}
   gateway-leste:
     build: ./gateway
     container_name: gateway-leste
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_ID=${GATEWAY_ID_LESTE}
+      - GATEWAY_IP=${GATEWAY_IP_LESTE}
+      - GATEWAY_HOST=${GATEWAY_HOST_LESTE}
+      - SETOR_ID=${SETOR_ID_LESTE}
+      - DEVICE_ID=${DEVICE_ID_LESTE}
+      - DEVICE_IP=${DEVICE_IP_LESTE}
+      - DEVICE_HOST=${DEVICE_HOST_LESTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_LESTE}
+    networks:
+      hormuz_net:
+        ipv4_address: ${GATEWAY_IP_LESTE}
   gateway-oeste:
     build: ./gateway
     container_name: gateway-oeste
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_ID=${GATEWAY_ID_OESTE}
+      - GATEWAY_IP=${GATEWAY_IP_OESTE}
+      - GATEWAY_HOST=${GATEWAY_HOST_OESTE}
+      - SETOR_ID=${SETOR_ID_OESTE}
+      - DEVICE_ID=${DEVICE_ID_OESTE}
+      - DEVICE_IP=${DEVICE_IP_OESTE}
+      - DEVICE_HOST=${DEVICE_HOST_OESTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_OESTE}
+    networks:
+      hormuz_net:
+        ipv4_address: ${GATEWAY_IP_OESTE}
   beacon-norte:
     build: ./beacon
     container_name: beacon-norte
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_IP=${GATEWAY_IP_NORTE}
+      - SETOR_ID=${SETOR_ID_NORTE}
+    networks:
+      - hormuz_net
   beacon-sul:
     build: ./beacon
     container_name: beacon-sul
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_IP=${GATEWAY_IP_SUL}
+      - SETOR_ID=${SETOR_ID_SUL}
+    networks:
+      - hormuz_net
   beacon-leste:
     build: ./beacon
     container_name: beacon-leste
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_IP=${GATEWAY_IP_LESTE}
+      - SETOR_ID=${SETOR_ID_LESTE}
+    networks:
+      - hormuz_net
   beacon-oeste:
     build: ./beacon
     container_name: beacon-oeste
     env_file: .env
-    network_mode: host
+    environment:
+      - GATEWAY_IP=${GATEWAY_IP_OESTE}
+      - SETOR_ID=${SETOR_ID_OESTE}
+    networks:
+      - hormuz_net
   drone-norte:
     build: ./device
     container_name: drone-norte
     env_file: .env
-    network_mode: host
+    environment:
+      - DEVICE_ID=${DEVICE_ID_NORTE}
+      - DEVICE_IP=${DEVICE_IP_NORTE}
+      - DEVICE_HOST=${DEVICE_HOST_NORTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_NORTE}
+    networks:
+      - hormuz_net
   drone-sul:
     build: ./device
     container_name: drone-sul
     env_file: .env
-    network_mode: host
+    environment:
+      - DEVICE_ID=${DEVICE_ID_SUL}
+      - DEVICE_IP=${DEVICE_IP_SUL}
+      - DEVICE_HOST=${DEVICE_HOST_SUL}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_SUL}
+    networks:
+      - hormuz_net
   drone-leste:
     build: ./device
     container_name: drone-leste
     env_file: .env
-    network_mode: host
+    environment:
+      - DEVICE_ID=${DEVICE_ID_LESTE}
+      - DEVICE_IP=${DEVICE_IP_LESTE}
+      - DEVICE_HOST=${DEVICE_HOST_LESTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_LESTE}
+    networks:
+      - hormuz_net
   drone-oeste:
     build: ./device
     container_name: drone-oeste
     env_file: .env
-    network_mode: host
+    environment:
+      - DEVICE_ID=${DEVICE_ID_OESTE}
+      - DEVICE_IP=${DEVICE_IP_OESTE}
+      - DEVICE_HOST=${DEVICE_HOST_OESTE}
+      - DEVICE_CONTROL_PORT=${DEVICE_CONTROL_PORT_OESTE}
+    networks:
+      - hormuz_net
   client:
     build: ./client
     container_name: client
     env_file: .env
-    network_mode: host
+    stdin_open: true
+    tty: true
+    networks:
+      hormuz_net:
+        ipv4_address: 172.16.103.100
+
+networks:
+  hormuz_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.103.0/24

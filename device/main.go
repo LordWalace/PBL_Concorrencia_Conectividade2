@@ -36,8 +36,6 @@ var (
 	statusValue        string = "DISPONIVEL"
 	missionActive      bool
 	missionEnd         time.Time
-	lamportClock       int
-	clockMutex         sync.Mutex
 )
 
 func mustEnv(key string) string {
@@ -49,6 +47,7 @@ func mustEnv(key string) string {
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	droneID = mustEnv("DEVICE_ID")
 	deviceIP = mustEnv("DEVICE_IP")
 	deviceHost = mustEnv("DEVICE_HOST")
@@ -71,7 +70,7 @@ func main() {
 		log.Printf("%s Gateway preferencial identificado: %s (%s)", logPrefix, gatewayNames[preferredIndex], gatewayAddrs[preferredIndex])
 	}
 
-	myControlAddr := fmt.Sprintf("%s:%s", deviceHost, deviceControlPort)
+	myControlAddr := fmt.Sprintf("%s:%s", deviceIP, deviceControlPort)
 
 	go registerLoop(myControlAddr, preferredIndex)
 	go heartbeatLoop(myControlAddr)
@@ -170,7 +169,7 @@ func tryRegisterGateway(idx int, controlAddr string) error {
 func heartbeatLoop(controlAddr string) {
 	logPrefix := fmt.Sprintf("[DRONE/%s]", droneID)
 	for {
-		time.Sleep(3 * time.Second)
+		time.Sleep(time.Duration(3+rand.Intn(3)) * time.Second)
 		log.Printf("%s [HEARTBEAT] Enviando heartbeat", logPrefix)
 		if err := sendHeartbeat(); err != nil {
 			log.Printf("%s [HEARTBEAT] Falha no heartbeat: %v", logPrefix, err)
@@ -285,7 +284,7 @@ func startMission() {
 	}
 	missionActive = true
 	statusValue = "OCUPADO"
-	duration := time.Duration(rand.Intn(11)+10) * time.Second
+	duration := time.Duration(rand.Intn(4)+3) * time.Second
 	missionEnd = time.Now().Add(duration)
 	gatewayName := currentGatewayName
 	stateMutex.Unlock()
@@ -293,7 +292,12 @@ func startMission() {
 	log.Printf("[DRONE/%s] [MISSAO] Iniciando missão de %s no gateway %s", droneID, duration, gatewayName)
 	go func() {
 		startTime := time.Now()
-		time.Sleep(duration)
+		mid := duration / 2
+		time.Sleep(mid)
+		if rand.Float64() < failureRate {
+			log.Fatalf("[DRONE/%s] FALHA ABRUPTA no meio da missão", droneID)
+		}
+		time.Sleep(duration - mid)
 		elapsed := time.Since(startTime)
 
 		stateMutex.Lock()

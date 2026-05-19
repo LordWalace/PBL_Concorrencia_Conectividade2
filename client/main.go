@@ -7,8 +7,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +19,12 @@ type Message struct {
 	Priority   int               `json:"priority,omitempty"`
 	Occurrence string            `json:"occurrence,omitempty"`
 	Payload    map[string]string `json:"payload,omitempty"`
+}
+
+type DroneInfo struct {
+	Status       string
+	MissionState string
+	Gateway      string
 }
 
 func mustEnv(key string) string {
@@ -39,36 +47,56 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 	sectors := []string{"Norte", "Sul", "Leste", "Oeste"}
 
-	fmt.Println("======================================")
-	fmt.Println("  CLIENTE DO DESBLOQUEIO DO ESTREITO")
-	fmt.Println("======================================")
+	clearScreen()
 
 	for {
+		fmt.Println("======================================")
+		fmt.Println("  CLIENTE DO DESBLOQUEIO DO ESTREITO")
+		fmt.Println("======================================")
 		fmt.Println("\nMenu:")
 		fmt.Println("1 - Injetar Alerta Manual")
 		fmt.Println("2 - Ver Status do Estreito")
 		fmt.Println("3 - Ver Log de Eventos")
 		fmt.Println("0 - Sair")
-		fmt.Print("Escolha uma opção: ")
+		fmt.Print("Escolha uma opção (ou Enter para atualizar): ")
 
-		choice := readNumber(reader, 0, 3)
+		choice := readChoice(reader)
 
 		switch choice {
-		case 1:
+		case "1":
+			clearScreen()
 			sendManualAlert(reader, sectors, gateways)
-		case 2:
+			time.Sleep(2 * time.Second)
+			clearScreen()
+
+		case "2":
+			clearScreen()
 			printStatus(sectors, gateways)
-		case 3:
+			fmt.Println()
+
+		case "3":
+			clearScreen()
 			viewEventLog(reader, sectors, gateways)
-		case 0:
+			fmt.Println()
+
+		case "":
+			clearMenuLines(11)
+			continue
+
+		case "0":
+			clearScreen()
 			fmt.Println("Encerrando cliente.")
 			return
+
+		default:
+			clearMenuLines(11)
+			continue
 		}
 	}
 }
 
 func sendManualAlert(reader *bufio.Reader, sectors []string, gateways map[string]string) {
-	fmt.Println("\n--- INJETAR ALERTA MANUAL ---")
+	fmt.Println("--- INJETAR ALERTA MANUAL ---")
 	for i, setor := range sectors {
 		fmt.Printf("%d - %s\n", i+1, setor)
 	}
@@ -108,75 +136,106 @@ func sendManualAlert(reader *bufio.Reader, sectors []string, gateways map[string
 		Occurrence: occurrence,
 	}
 
-	fmt.Printf("[CLIENTE] Enviando alerta para %s com prioridade %d e ocorrência '%s'\n", setorEscolhido, priority, occurrence)
+	fmt.Printf("\n[CLIENTE] Enviando alerta para %s com prioridade %d e ocorrência '%s'\n", setorEscolhido, priority, occurrence)
 	sendWithFallback(msg, setorEscolhido, sectors, gateways)
 }
 
 func printStatus(sectors []string, gateways map[string]string) {
-	fmt.Println("\n--- STATUS DO ESTREITO ---")
-	globalDrones := make(map[string]string)
+	fmt.Println("--- STATUS DO ESTREITO ---")
 
-	for _, sector := range sectors {
-		addr := gateways[sector]
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-		if err != nil {
-			fmt.Printf("[Setor %s] OFFLINE\n", sector)
-			continue
-		}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	globalDrones := make(map[string]DroneInfo)
+	sectorResults := make([]string, len(sectors))
 
-		request := Message{Type: "STATUS_REQ"}
-		if err := json.NewEncoder(conn).Encode(request); err != nil {
-			fmt.Printf("[Setor %s] Erro ao enviar requisição de status: %v\n", sector, err)
-			conn.Close()
-			continue
-		}
-
-		var reply Message
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		err = json.NewDecoder(conn).Decode(&reply)
-		conn.Close()
-
-		if err != nil || reply.Type != "STATUS_REP" {
-			fmt.Printf("[Setor %s] OFFLINE ou API de status indisponível\n", sector)
-			continue
-		}
-
-		fmt.Printf("[Setor %s] ONLINE | Fila pendente: %s\n", sector, reply.Payload["queue_size"])
-		droneStates := make(map[string]map[string]string)
-		for key, value := range reply.Payload {
-			if !strings.HasPrefix(key, "drone_") {
-				continue
+	for i, sector := range sectors {
+		wg.Add(1)
+		go func(idx int, setor string) {
+			defer wg.Done()
+			addr := gateways[setor]
+			conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+			if err != nil {
+				sectorResults[idx] = fmt.Sprintf("[Setor %s] OFFLINE", setor)
+				return
 			}
-			remainder := strings.TrimPrefix(key, "drone_")
-			knownFields := []string{"status", "gateway_atual", "mission_active", "mission_info", "control_addr", "setor_base", "ultima_atualizacao"}
-			for _, field := range knownFields {
-				suffix := "_" + field
-				if strings.HasSuffix(remainder, suffix) {
-					droneID := remainder[:len(remainder)-len(suffix)]
-					if _, exists := droneStates[droneID]; !exists {
-						droneStates[droneID] = make(map[string]string)
-					}
-					droneStates[droneID][field] = value
-					break
+			defer conn.Close()
+
+			if err := json.NewEncoder(conn).Encode(Message{Type: "STATUS_REQ"}); err != nil {
+				sectorResults[idx] = fmt.Sprintf("[Setor %s] Erro ao solicitar status: %v", setor, err)
+				return
+			}
+
+			var reply Message
+			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			if err := json.NewDecoder(conn).Decode(&reply); err != nil || reply.Type != "STATUS_REP" {
+				sectorResults[idx] = fmt.Sprintf("[Setor %s] OFFLINE ou API de status indisponível", setor)
+				return
+			}
+
+			queueSize := reply.Payload["queue_size"]
+			sectorResults[idx] = fmt.Sprintf("[Setor %s] ONLINE | Fila pendente: %s", setor, queueSize)
+
+			droneStates := make(map[string]DroneInfo)
+			for key, value := range reply.Payload {
+				if !strings.HasPrefix(key, "drone_") {
+					continue
 				}
-			}
-		}
+				trimmed := strings.TrimPrefix(key, "drone_")
 
-		for droneID, fields := range droneStates {
-			displayID := cleanDroneName(droneID)
-			sectorName := strings.TrimPrefix(displayID, "Drone_")
-			mission := "Nenhuma"
-			if fields["mission_active"] == "true" {
-				mission = "Em andamento"
+				var droneID, field string
+				switch {
+				case strings.HasSuffix(trimmed, "_status"):
+					droneID = strings.TrimSuffix(trimmed, "_status")
+					field = "status"
+				case strings.HasSuffix(trimmed, "_mission_active"):
+					droneID = strings.TrimSuffix(trimmed, "_mission_active")
+					field = "mission_active"
+				case strings.HasSuffix(trimmed, "_gateway_atual"):
+					droneID = strings.TrimSuffix(trimmed, "_gateway_atual")
+					field = "gateway_atual"
+				default:
+					continue
+				}
+
+				info := droneStates[droneID]
+				switch field {
+				case "status":
+					info.Status = value
+				case "mission_active":
+					if value == "true" {
+						info.MissionState = "Em missão"
+					} else {
+						info.MissionState = "Disponível"
+					}
+				case "gateway_atual":
+					info.Gateway = value
+				}
+				droneStates[droneID] = info
 			}
-			fmt.Printf("   -> %s\n", displayID)
-			fmt.Printf("      Status: %s\n", fields["status"])
-			fmt.Printf("      Setor: %s\n", sectorName)
-			fmt.Printf("      Missão: %s\n", mission)
-			if _, exists := globalDrones[displayID]; !exists {
-				globalDrones[displayID] = fields["status"]
+
+			mu.Lock()
+			for id, info := range droneStates {
+				name := cleanDroneName(id)
+				existing := globalDrones[name]
+				if info.Status != "" {
+					existing.Status = info.Status
+				}
+				if info.MissionState != "" {
+					existing.MissionState = info.MissionState
+				}
+				if info.Gateway != "" {
+					existing.Gateway = info.Gateway
+				}
+				globalDrones[name] = existing
 			}
-		}
+			mu.Unlock()
+		}(i, sector)
+	}
+
+	wg.Wait()
+
+	for _, result := range sectorResults {
+		fmt.Println(result)
 	}
 
 	fmt.Println("\n--- STATUS GLOBAL DA FROTA ---")
@@ -184,26 +243,43 @@ func printStatus(sectors []string, gateways map[string]string) {
 		fmt.Println("Nenhum drone conhecido no momento.")
 		return
 	}
-	for droneID, status := range globalDrones {
-		fmt.Printf("   %s => %s\n", droneID, status)
+
+	keys := make([]string, 0, len(globalDrones))
+	for droneID := range globalDrones {
+		keys = append(keys, droneID)
+	}
+	sort.Strings(keys)
+
+	for _, droneID := range keys {
+		info := globalDrones[droneID]
+		status := info.Status
+		if status == "" {
+			status = "DESCONHECIDO"
+		}
+		mission := info.MissionState
+		if mission == "" {
+			mission = "Indefinido"
+		}
+		gateway := info.Gateway
+		if gateway == "" {
+			gateway = "-"
+		}
+		fmt.Printf("[%s] - Status: %s | Missão: %s | Gateway: %s\n", droneID, status, mission, gateway)
 	}
 }
 
 func cleanDroneName(droneID string) string {
-	parts := strings.Split(droneID, "_")
-	if len(parts) > 1 {
-		last := parts[len(parts)-1]
-		if _, err := strconv.Atoi(last); err == nil {
-			return strings.Join(parts[:len(parts)-1], "_")
-		}
+	if strings.HasPrefix(droneID, "drone_") {
+		droneID = strings.TrimPrefix(droneID, "drone_")
 	}
 	return droneID
 }
 
 func viewEventLog(reader *bufio.Reader, sectors []string, gateways map[string]string) {
-	fmt.Println("\n--- LOG DE EVENTOS ---")
+	fmt.Println("--- LOG DE EVENTOS ---")
 	fmt.Print("Quantos eventos deseja ver por setor? ")
 	eventCount := readNumber(reader, 1, 20)
+	fmt.Println()
 
 	for _, sector := range sectors {
 		addr := gateways[sector]
@@ -222,13 +298,12 @@ func viewEventLog(reader *bufio.Reader, sectors []string, gateways map[string]st
 
 		var reply Message
 		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		err = json.NewDecoder(conn).Decode(&reply)
-		conn.Close()
-
-		if err != nil {
+		if err := json.NewDecoder(conn).Decode(&reply); err != nil {
 			fmt.Printf("[Setor %s] Falha ao receber eventos: %v\n", sector, err)
+			conn.Close()
 			continue
 		}
+		conn.Close()
 
 		if reply.Type != "EVENTS_REP" {
 			fmt.Printf("[Setor %s] API de eventos não disponível\n", sector)
@@ -252,9 +327,25 @@ func viewEventLog(reader *bufio.Reader, sectors []string, gateways map[string]st
 	}
 }
 
+func readChoice(reader *bufio.Reader) string {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		time.Sleep(2 * time.Second)
+		os.Exit(1)
+		return ""
+	}
+	// Apenas retorna a string limpa. Se for inválido, o switch do main lida com isso apagando o menu de forma limpa.
+	return strings.TrimSpace(line)
+}
+
 func readNumber(reader *bufio.Reader, min, max int) int {
 	for {
-		line, _ := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			os.Exit(1)
+			return 0
+		}
 		value, err := strconv.Atoi(strings.TrimSpace(line))
 		if err != nil || value < min || value > max {
 			fmt.Printf("Entrada inválida. Digite um número entre %d e %d: ", min, max)
@@ -281,16 +372,24 @@ func sendWithFallback(msg Message, initialSector string, sectors []string, gatew
 				continue
 			}
 			if err := json.NewEncoder(conn).Encode(msg); err != nil {
-				fmt.Printf("[CLIENTE] Falha ao enviar alerta para %s: %v\n", sector, err)
 				conn.Close()
 				continue
 			}
 			conn.Close()
-			fmt.Printf("[CLIENTE] Alerta enviado com sucesso para %s (%s)\n", sector, target)
+			fmt.Printf("[CLIENTE] Alerta salvo com sucesso no Setor %s (%s)\n", sector, target)
 			return
 		}
 
-		fmt.Println("[CLIENTE] Nenhum gateway disponível. Tentando novamente em 5 segundos...")
+		fmt.Println("[CLIENTE] Toda a malha está offline. Tentando novamente em 5 segundos...")
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func clearScreen() {
+	fmt.Print("\033[H\033[2J\033[3J")
+}
+
+func clearMenuLines(linhas int) {
+	// Nova função mágica: sobe o cursor 'N' linhas e apaga tudo abaixo dele
+	fmt.Printf("\033[%dA\033[J", linhas)
 }

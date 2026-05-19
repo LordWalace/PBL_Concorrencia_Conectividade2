@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -21,11 +20,6 @@ type BeaconAlert struct {
 	TimestampUnix  int64  `json:"timestamp_unix"`
 }
 
-var (
-	lamportClock int
-	clockMutex   sync.Mutex
-)
-
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -35,24 +29,32 @@ func mustEnv(key string) string {
 }
 
 func main() {
-	gatewayIP := mustEnv("GATEWAY_IP")
+	localGatewayIP := mustEnv("GATEWAY_IP")
 	gatewayPort := mustEnv("GATEWAY_TCP_REG_PORT")
 	setorID := mustEnv("SETOR_ID")
 
-	beaconPrefix := fmt.Sprintf("[BEACON/%s]", setorID)
-	log.Printf("%s Beacon iniciado", beaconPrefix)
+	gatewayAddrs := map[string]string{
+		"Norte": fmt.Sprintf("%s:%s", mustEnv("IP_NORTE"), gatewayPort),
+		"Sul":   fmt.Sprintf("%s:%s", mustEnv("IP_SUL"), gatewayPort),
+		"Leste": fmt.Sprintf("%s:%s", mustEnv("IP_LESTE"), gatewayPort),
+		"Oeste": fmt.Sprintf("%s:%s", mustEnv("IP_OESTE"), gatewayPort),
+	}
+
+	localGatewayAddr := fmt.Sprintf("%s:%s", localGatewayIP, gatewayPort)
+	logPrefix := fmt.Sprintf("[BEACON/%s]", setorID)
+	log.Printf("%s Beacon iniciado", logPrefix)
 
 	rand.Seed(time.Now().UnixNano())
 
-	go runSensor("Radar_Costeiro", "RADAR_INTERVAL_MS", gatewayIP, gatewayPort, setorID)
-	go runSensor("Sensor_Naval", "NAVAL_INTERVAL_MS", gatewayIP, gatewayPort, setorID)
-	go runSensor("Boia_Inteligente", "BOIA_INTERVAL_MS", gatewayIP, gatewayPort, setorID)
-	go runSensor("Estacao_Comunicacao", "ESTACAO_INTERVAL_MS", gatewayIP, gatewayPort, setorID)
+	go runSensor("Radar_Costeiro", "RADAR_INTERVAL_MS", setorID, localGatewayAddr, gatewayAddrs)
+	go runSensor("Sensor_Naval", "NAVAL_INTERVAL_MS", setorID, localGatewayAddr, gatewayAddrs)
+	go runSensor("Boia_Inteligente", "BOIA_INTERVAL_MS", setorID, localGatewayAddr, gatewayAddrs)
+	go runSensor("Estacao_Comunicacao", "ESTACAO_INTERVAL_MS", setorID, localGatewayAddr, gatewayAddrs)
 
 	select {}
 }
 
-func runSensor(sensorName, intervalEnv, gatewayIP, gatewayPort, setorID string) {
+func runSensor(sensorName, intervalEnv, setorID, localGatewayAddr string, gatewayAddrs map[string]string) {
 	sensorPrefix := fmt.Sprintf("[SENSOR/%s]", sensorName)
 	intervalMsStr := mustEnv(intervalEnv)
 	intervalMs, err := strconv.Atoi(intervalMsStr)
@@ -75,20 +77,13 @@ func runSensor(sensorName, intervalEnv, gatewayIP, gatewayPort, setorID string) 
 			SensorType:     sensorName,
 			OccurrenceType: occurrence,
 			Priority:       priority,
-			LamportClock:   nextLamport(),
+			LamportClock:   int(time.Now().UnixNano()),
 			TimestampUnix:  time.Now().Unix(),
 		}
 
-		log.Printf("%s Enviando alerta com prioridade %d e Lamport %d", sensorPrefix, alert.Priority, alert.LamportClock)
-		sendAlert(sensorPrefix, alert, gatewayIP, gatewayPort)
+		log.Printf("%s Enviando alerta com prioridade %d", sensorPrefix, alert.Priority)
+		sendAlert(sensorPrefix, alert, localGatewayAddr, gatewayAddrs)
 	}
-}
-
-func nextLamport() int {
-	clockMutex.Lock()
-	defer clockMutex.Unlock()
-	lamportClock++
-	return lamportClock
 }
 
 func generateOccurrence(priority int) string {
@@ -113,15 +108,7 @@ func generateOccurrence(priority int) string {
 	}
 }
 
-func sendAlert(sensorPrefix string, alert BeaconAlert, gatewayIP, gatewayPort string) {
-	gatewayAddr := net.JoinHostPort(gatewayIP, gatewayPort)
-	conn, err := net.DialTimeout("tcp", gatewayAddr, 3*time.Second)
-	if err != nil {
-		log.Printf("%s Falha ao enviar alerta: %v", sensorPrefix, err)
-		return
-	}
-	defer conn.Close()
-
+func sendAlert(sensorPrefix string, alert BeaconAlert, localGatewayAddr string, gatewayAddrs map[string]string) {
 	message := map[string]interface{}{
 		"type":       "ALERT",
 		"occurrence": alert.OccurrenceType,
@@ -140,11 +127,40 @@ func sendAlert(sensorPrefix string, alert BeaconAlert, gatewayIP, gatewayPort st
 		return
 	}
 
-	_, err = conn.Write(payload)
+	for {
+		if trySendToGateway(sensorPrefix, localGatewayAddr, payload) {
+			return
+		}
+
+		log.Printf("%s Gateway local indisponível. Tentando encaminhar aos vizinhos.", sensorPrefix)
+		for region, addr := range gatewayAddrs {
+			if addr == localGatewayAddr {
+				continue
+			}
+			if trySendToGateway(sensorPrefix, addr, payload) {
+				log.Printf("%s Alerta encaminhado com sucesso para gateway %s (%s)", sensorPrefix, region, addr)
+				return
+			}
+		}
+
+		log.Printf("%s Nenhum gateway respondeu. Repetindo envio em 5 segundos.", sensorPrefix)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func trySendToGateway(sensorPrefix, addr string, payload []byte) bool {
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
+		log.Printf("%s Falha ao conectar no gateway %s: %v", sensorPrefix, addr, err)
+		return false
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(payload); err != nil {
 		log.Printf("%s Falha ao enviar alerta: %v", sensorPrefix, err)
-		return
+		return false
 	}
 
-	log.Printf("%s Alerta enviado com sucesso ao gateway %s", sensorPrefix, gatewayAddr)
+	log.Printf("%s Alerta enviado com sucesso ao gateway %s", sensorPrefix, addr)
+	return true
 }
